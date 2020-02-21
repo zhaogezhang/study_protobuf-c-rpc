@@ -1,4 +1,8 @@
 # study_protobuf-c-rpc
+Because the native language is Chinese, the code comments are written in Chinese.  
+If you are like me and would like to join us, please contact me:  
+name : zhaoge.zhang  
+email : 18341265598@163.com  
 
 [![Build Status](https://travis-ci.org/protobuf-c/protobuf-c-rpc.svg?branch=master)](https://travis-ci.org/protobuf-c/protobuf-c-rpc) [![Coverage Status](https://img.shields.io/coveralls/protobuf-c/protobuf-c-rpc.svg)](https://coveralls.io/r/protobuf-c/protobuf-c-rpc)
 
