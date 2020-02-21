@@ -36,6 +36,7 @@
 typedef struct _ProtobufCRPCDataBuffer ProtobufCRPCDataBuffer;
 typedef struct _ProtobufCRPCDataBufferFragment ProtobufCRPCDataBufferFragment;
 
+/* 定义当前系统使用的缓存数据块单元数据结构 */
 struct _ProtobufCRPCDataBufferFragment
 {
   ProtobufCRPCDataBufferFragment *next;
@@ -43,14 +44,17 @@ struct _ProtobufCRPCDataBufferFragment
   unsigned buf_length;	/* length of valid data in buf */
 };
 
+/* 定义当前系统使用的缓存空间的数据结构 */
 struct _ProtobufCRPCDataBuffer
 {
   /* For compatibility with message pack_to_buffer functions in libprotobuf-c */
   ProtobufCBuffer                   base;
-  size_t size;
 
-  ProtobufCRPCDataBufferFragment    *first_frag;
-  ProtobufCRPCDataBufferFragment    *last_frag;
+  size_t size;  /* 表示当前数据缓冲区中包含的缓存数据块个数 */
+
+  ProtobufCRPCDataBufferFragment    *first_frag; /* 表示当前数据缓冲区中第一个缓存数据块指针 */
+  ProtobufCRPCDataBufferFragment    *last_frag;  /* 表示当前数据缓冲区中最后一个缓存数据块指针 */
+  
   ProtobufCAllocator *allocator;
 };
 

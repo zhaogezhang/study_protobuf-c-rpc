@@ -42,20 +42,67 @@
 #undef FALSE
 #define FALSE 0
 
+/**
+ * 缓存数据块单元链表结构如下：
+ *                  
+ *               ----------------------------                       ----------------------------
+ *               |   next element pointer   |  -------------------> |   next element pointer   |
+ *               ----------------------------                       ----------------------------
+ *               |       buf_start          |                       |       buf_start          |
+ *               ----------------------------                       ----------------------------
+ *               |       buf_length         |                       |       buf_length         |
+ * buf_start---> ----------------------------  \      buf_start---> ----------------------------  \
+ *               |                          |  |                    |                          |  |
+ *               |                          |  |                    |                          |  |
+ *               |       buf  space         |  | <--- buf_length    |       buf  space         |  | <--- buf_length
+ *               |                          |  |                    |                          |  |
+ *               |                          |  |                    |                          |  |
+ *               ----------------------------  /                    ----------------------------  /
+ */
+
+/* 定义系统缓存数据块中存储有效数据的空间的默认大小字节数 */
 #define PROTOBUF_C_RPC_FRAGMENT_DATA_SIZE        4096
+
+/* 获取指定缓存数据块中负载空间的起始地址 */
 #define PROTOBUF_C_RPC_FRAGMENT_DATA(frag)     ((uint8_t*)(((ProtobufCRPCDataBufferFragment*)(frag))+1))
 
 /* --- ProtobufCRPCDataBufferFragment implementation --- */
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_data_buffer_fragment_avail
+** 功能描述: 计算指定的缓存数据块中还剩多大空闲空间字节数
+** 输	 入: frag - 指定的缓存数据块指针
+** 输	 出: int - 剩余的空闲空间字节数
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static inline int 
 protobuf_c_rpc_data_buffer_fragment_avail (ProtobufCRPCDataBufferFragment *frag)
 {
   return PROTOBUF_C_RPC_FRAGMENT_DATA_SIZE - frag->buf_start - frag->buf_length;
 }
+
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_data_buffer_fragment_start
+** 功能描述: 计算指定缓存数据块存储有效数据的空间的起始地址
+** 输	 入: frag - 指定的缓存数据块指针
+** 输	 出: uint8_t * - 有效数据空间起始地址
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static inline uint8_t *
 protobuf_c_rpc_data_buffer_fragment_start (ProtobufCRPCDataBufferFragment *frag)
 {
   return PROTOBUF_C_RPC_FRAGMENT_DATA(frag) + frag->buf_start;
 }
+
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_data_buffer_fragment_end
+** 功能描述: 计算指定缓存数据块存储有效数据的空间的结尾地址
+** 输	 入: frag - 指定的缓存数据块指针
+** 输	 出: uint8_t * - 有效数据空间结尾地址
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static inline uint8_t *
 protobuf_c_rpc_data_buffer_fragment_end (ProtobufCRPCDataBufferFragment *frag)
 {
@@ -64,10 +111,21 @@ protobuf_c_rpc_data_buffer_fragment_end (ProtobufCRPCDataBufferFragment *frag)
 
 /* --- ProtobufCRPCDataBufferFragment recycling --- */
 #if BUFFER_RECYCLING
+/* 表示静态分配池中还剩余的缓存数据块单元个数 */
 static int num_recycled = 0;
+
+/* 指向缓存数据块单元静态分配池链表的第一个元素 */
 static ProtobufCRPCDataBufferFragment* recycling_stack = 0;
 #endif
 
+/*********************************************************************************************************
+** 函数名称: new_native_fragment
+** 功能描述: 从系统内申请一个缓存数据块单元结构
+** 输	 入: allocator - 指定的内存分配器指针
+** 输	 出: frag - 申请到的缓存数据块单元指针
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static ProtobufCRPCDataBufferFragment *
 new_native_fragment(ProtobufCAllocator *allocator)
 {
@@ -91,6 +149,15 @@ new_native_fragment(ProtobufCAllocator *allocator)
   return frag;
 }
 
+/*********************************************************************************************************
+** 函数名称: recycle
+** 功能描述: 释放一个缓存数据块单元结构到系统内
+** 输	 入: allocator - 指定的内存分配器指针
+**         : frag - 需要释放的缓存数据块单元指针
+** 输	 出: 
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 #if GSK_DEBUG_BUFFER_ALLOCATIONS || !BUFFER_RECYCLING
 #define recycle(allocator, frag) allocator->free (allocator, frag)
 #else	/* optimized (?) */
@@ -111,6 +178,14 @@ recycle(ProtobufCRPCDataBufferFragment* frag,
  * Free unused buffer fragments.  (Normally some are
  * kept around to reduce strain on the global allocator.)
  */
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_data_buffer_cleanup_recycling_bin
+** 功能描述: 清理释放当前系统静态分配的所有未使用的缓存数据块占用的资源
+** 输	 入: 
+** 输	 出: 
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 void
 protobuf_c_rpc_data_buffer_cleanup_recycling_bin ()
 {
@@ -129,6 +204,18 @@ protobuf_c_rpc_data_buffer_cleanup_recycling_bin ()
 }
 
 /* For ProtobufCBuffer compatibility */
+/*********************************************************************************************************
+** 函数名称: _append
+** 功能描述: 向指定的缓存空间末尾位置追加指定长度的数据
+** 注     释: 如果指定的缓存空间不足以存储指定长度的数据，则从系统内申请新的缓存数据块来存储追加的数据
+**         : 并把新申请的缓存数据块放到指定缓存空间链表的末尾位置
+** 输	 入: buffer - 指定的缓存空间数据结构指针
+**         : length - 需要追加的数据长度
+**         : data - 需要追加的数据
+** 输	 出: 
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static void _append (ProtobufCBuffer *buffer, size_t length, const uint8_t *data)
 {
    protobuf_c_rpc_data_buffer_append ((ProtobufCRPCDataBuffer *) buffer,
@@ -144,6 +231,15 @@ static void _append (ProtobufCBuffer *buffer, size_t length, const uint8_t *data
  * Construct an empty buffer out of raw memory.
  * (This is equivalent to filling the buffer with 0s)
  */
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_data_buffer_init
+** 功能描述: 初始化指定的缓存空间数据结构
+** 输	 入: buffer - 需要初始化的缓存空间数据结构指针
+**         : allocator - 指定的内存分配器指针
+** 输	 出: 
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 void
 protobuf_c_rpc_data_buffer_init(ProtobufCRPCDataBuffer *buffer,
                             ProtobufCAllocator *allocator)
@@ -155,6 +251,15 @@ protobuf_c_rpc_data_buffer_init(ProtobufCRPCDataBuffer *buffer,
 }
 
 #if defined(GSK_DEBUG) || GSK_DEBUG_BUFFER_ALLOCATIONS
+/*********************************************************************************************************
+** 函数名称: verify_buffer
+** 功能描述: 校验指定的缓存空间数据结构是否合法（数据长度信息是否正确）
+** 输	 入: buffer - 指定的缓存空间数据结构指针
+** 输	 出: TRUE - 合法
+**         : FALSE - 不合法
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static inline gboolean
 verify_buffer (const ProtobufCRPCDataBuffer *buffer)
 {
@@ -177,6 +282,18 @@ verify_buffer (const ProtobufCRPCDataBuffer *buffer)
  *
  * Append data into the buffer.
  */
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_data_buffer_append
+** 功能描述: 向指定的缓存空间末尾位置追加指定长度的数据
+** 注     释: 如果指定的缓存空间不足以存储指定长度的数据，则从系统内申请新的缓存数据块来存储追加的数据
+**         : 并把新申请的缓存数据块放到指定缓存空间链表的末尾位置
+** 输	 入: buffer - 指定的缓存空间数据结构指针
+**         : data - 需要追加的数据
+**         : length - 需要追加的数据长度
+** 输	 出: 
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 void
 protobuf_c_rpc_data_buffer_append(ProtobufCRPCDataBuffer    *buffer,
                   const void   *data,
@@ -212,6 +329,18 @@ protobuf_c_rpc_data_buffer_append(ProtobufCRPCDataBuffer    *buffer,
   CHECK_INTEGRITY (buffer);
 }
 
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_data_buffer_append_repeated_char
+** 功能描述: 向指定的缓存空间末尾位置追加指定个数的重复字符数据
+** 注     释: 如果指定的缓存空间不足以存储指定长度的数据，则从系统内申请新的缓存数据块来存储追加的数据
+**         : 并把新申请的缓存数据块放到指定缓存空间链表的末尾位置
+** 输	 入: buffer - 指定的缓存空间数据结构指针
+**         : character - 指定的字符数据
+**         : count - 需要追加的字符个数
+** 输	 出: 
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 void
 protobuf_c_rpc_data_buffer_append_repeated_char (ProtobufCRPCDataBuffer    *buffer, 
                                  char          character,
@@ -265,6 +394,17 @@ protobuf_c_rpc_data_buffer_append_repeated_data (ProtobufCRPCDataBuffer    *buff
  *
  * Append a string to the buffer.
  */
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_data_buffer_append_string
+** 功能描述: 向指定的缓存空间末尾位置追加指定的字符串数据
+** 注     释: 如果指定的缓存空间不足以存储指定长度的数据，则从系统内申请新的缓存数据块来存储追加的数据
+**         : 并把新申请的缓存数据块放到指定缓存空间链表的末尾位置
+** 输	 入: buffer - 指定的缓存空间数据结构指针
+**         : string - 需要追加的字符串数据
+** 输	 出: 
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 void
 protobuf_c_rpc_data_buffer_append_string(ProtobufCRPCDataBuffer  *buffer,
                          const char *string)
@@ -280,6 +420,17 @@ protobuf_c_rpc_data_buffer_append_string(ProtobufCRPCDataBuffer  *buffer,
  *
  * Append a byte to a buffer.
  */
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_data_buffer_append_char
+** 功能描述: 向指定的缓存空间末尾位置追加一个字符数据
+** 注     释: 如果指定的缓存空间不足以存储指定长度的数据，则从系统内申请新的缓存数据块来存储追加的数据
+**         : 并把新申请的缓存数据块放到指定缓存空间链表的末尾位置
+** 输	 入: buffer - 指定的缓存空间数据结构指针
+**         : character - 需要追加的字符数据
+** 输	 出: 
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 void
 protobuf_c_rpc_data_buffer_append_char(ProtobufCRPCDataBuffer *buffer,
 		       char       character)
@@ -295,6 +446,17 @@ protobuf_c_rpc_data_buffer_append_char(ProtobufCRPCDataBuffer *buffer,
  *
  * Append a NUL-terminated string to the buffer.  The NUL is appended.
  */
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_data_buffer_append_string0
+** 功能描述: 向指定的缓存空间末尾位置追加指定的字符串数据（包含字符串结尾 NUL 字符）
+** 注     释: 如果指定的缓存空间不足以存储指定长度的数据，则从系统内申请新的缓存数据块来存储追加的数据
+**         : 并把新申请的缓存数据块放到指定缓存空间链表的末尾位置
+** 输	 入: buffer - 指定的缓存空间数据结构指针
+**         : string - 需要追加的字符串数据
+** 输	 出: 
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 void
 protobuf_c_rpc_data_buffer_append_string0      (ProtobufCRPCDataBuffer    *buffer,
 				const char   *string)
@@ -314,6 +476,17 @@ protobuf_c_rpc_data_buffer_append_string0      (ProtobufCRPCDataBuffer    *buffe
  *
  * returns: number of bytes transferred.
  */
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_data_buffer_read
+** 功能描述: 从指定的缓存空间头部开始读取指定长度数据到指定的缓冲区中并“释放”掉被读出数据的缓存数据块
+**         : 占用的内存资源
+** 输	 入: buffer - 指定的缓存空间数据结构指针
+**         : max_length - 需要读取的数据字节数
+** 输	 出: data - 用来存储读到的数据的缓冲区指针
+**         : rv - 成功读取的数据字节数
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 size_t
 protobuf_c_rpc_data_buffer_read(ProtobufCRPCDataBuffer    *buffer,
                 void         *data,
@@ -368,6 +541,17 @@ protobuf_c_rpc_data_buffer_read(ProtobufCRPCDataBuffer    *buffer,
  *
  * returns: number of bytes copied into data.
  */
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_data_buffer_peek
+** 功能描述: 从指定的缓存空间头部开始读取指定长度数据到指定的缓冲区中但是“不释放”掉被读出数据的缓存数据块
+**         : 占用的内存资源
+** 输	 入: buffer - 指定的缓存空间数据结构指针
+**         : max_length - 需要读取的数据字节数
+** 输	 出: data - 用来存储读到的数据的缓冲区指针
+**         : rv - 成功读取的数据字节数
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 size_t
 protobuf_c_rpc_data_buffer_peek     (const ProtobufCRPCDataBuffer *buffer,
                      void            *data,
@@ -409,6 +593,16 @@ protobuf_c_rpc_data_buffer_peek     (const ProtobufCRPCDataBuffer *buffer,
  *
  * returns: a newly allocated NUL-terminated string, or NULL.
  */
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_data_buffer_read_line
+** 功能描述: 从指定的缓存空间头部开始读取一个以 '\n' 为终结符的数据存储到新申请的内存中，然后返回
+**         : 这个内存块的地址并“释放”掉被读出数据的缓存数据块占用的内存资源
+** 输	 入: buffer - 指定的缓存空间数据结构指针
+** 输	 出: rv - 成功读到的数据的缓冲区指针
+**         : NULL - 读取失败
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 char *
 protobuf_c_rpc_data_buffer_read_line(ProtobufCRPCDataBuffer *buffer)
 {
@@ -450,6 +644,16 @@ protobuf_c_rpc_data_buffer_read_line(ProtobufCRPCDataBuffer *buffer)
  *
  * returns: a newly allocated NUL-terminated string, or NULL.
  */
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_data_buffer_parse_string0
+** 功能描述: 从指定的缓存空间头部开始读取一个以 '\0' 为终结符的字符串存储到新申请的内存中，然后返回
+**         : 这个内存块的地址并“释放”掉被读出数据的缓存数据块占用的内存资源
+** 输	 入: buffer - 指定的缓存空间数据结构指针
+** 输	 出: rv - 成功读到的字符串的缓冲区指针
+**         : NULL - 读取失败
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 char *
 protobuf_c_rpc_data_buffer_parse_string0(ProtobufCRPCDataBuffer *buffer)
 {
@@ -472,6 +676,16 @@ protobuf_c_rpc_data_buffer_parse_string0(ProtobufCRPCDataBuffer *buffer)
  *
  * returns: an unsigned character or -1.
  */
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_data_buffer_peek_char
+** 功能描述: 从指定的缓存空间头部开始读取一个字节数据并返回但是“不释放”掉被读出数据的缓存数据块
+**         : 占用的内存资源
+** 输	 入: buffer - 指定的缓存空间数据结构指针
+** 输	 出: int - 成功读取的数据
+**         : -1 - 读取失败
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 int
 protobuf_c_rpc_data_buffer_peek_char(const ProtobufCRPCDataBuffer *buffer)
 {
@@ -500,6 +714,16 @@ protobuf_c_rpc_data_buffer_peek_char(const ProtobufCRPCDataBuffer *buffer)
  *
  * returns: an unsigned character or -1.
  */
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_data_buffer_read_char
+** 功能描述: 从指定的缓存空间头部开始读取一个字节数据并返回，而且“释放”掉被读出数据的缓存数据块
+**         : 占用的内存资源
+** 输	 入: buffer - 指定的缓存空间数据结构指针
+** 输	 出: c - 成功读取的数据
+**         : -1 - 读取失败
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 int
 protobuf_c_rpc_data_buffer_read_char (ProtobufCRPCDataBuffer *buffer)
 {
@@ -519,6 +743,16 @@ protobuf_c_rpc_data_buffer_read_char (ProtobufCRPCDataBuffer *buffer)
  *
  * returns: number of bytes discarded.
  */
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_data_buffer_discard
+** 功能描述: 从指定的缓存空间头部开始丢弃指定长度的数据并“释放”掉被丢弃数据的缓存数据块
+**         : 占用的内存资源
+** 输	 入: buffer - 指定的缓存空间数据结构指针
+**         : max_discard - 需要丢弃的数据字节数
+** 输	 出: rv - 成功丢弃的数据字节数
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 size_t
 protobuf_c_rpc_data_buffer_discard(ProtobufCRPCDataBuffer *buffer,
                    size_t      max_discard)
@@ -550,6 +784,15 @@ protobuf_c_rpc_data_buffer_discard(ProtobufCRPCDataBuffer *buffer,
   return rv;
 }
 
+/*********************************************************************************************************
+** 函数名称: errno_is_ignorable
+** 功能描述: 判断指定的错误码是否可以被忽略
+** 输	 入: e - 指定的错误码
+** 输	 出: TRUE - 可以被忽略
+**         : FALSE - 不可以被忽略
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static inline protobuf_c_boolean
 errno_is_ignorable (int e)
 {
@@ -574,6 +817,16 @@ errno_is_ignorable (int e)
  * returns: the number of bytes transferred,
  * or -1 on a write error (consult errno).
  */
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_data_buffer_writev
+** 功能描述: 从指定的缓存空间头部开始读取尽可能多的数据并通过 writev 写如到指定的文件中，然后“释放”掉
+**         : 被处理数据的缓存数据块占用的内存资源
+** 输	 入: read_from - 指定的缓存空间数据结构指针
+**         : fd - 指定的文件描述符
+** 输	 出: rv - 成功读取并存储的数据字节数
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 int
 protobuf_c_rpc_data_buffer_writev (ProtobufCRPCDataBuffer       *read_from,
 		   int              fd)
@@ -625,6 +878,18 @@ protobuf_c_rpc_data_buffer_writev (ProtobufCRPCDataBuffer       *read_from,
 #undef MIN
 #define MIN(a,b)   ((a) < (b) ? (a) : (b))
 int
+
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_data_buffer_writev_len
+** 功能描述: 从指定的缓存空间头部开始指定字节数的数据并通过 writev 写如到指定的文件中，然后“释放”掉
+**		   : 被处理数据的缓存数据块占用的内存资源
+** 输	 入: read_from - 指定的缓存空间数据结构指针
+**		   : fd - 指定的文件描述符
+**         : max_bytes - 指定的数据字节数
+** 输	 出: rv - 成功读取并存储的数据字节数
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 protobuf_c_rpc_data_buffer_writev_len (ProtobufCRPCDataBuffer *read_from,
 		       int        fd,
 		       size_t      max_bytes)
@@ -676,6 +941,15 @@ protobuf_c_rpc_data_buffer_writev_len (ProtobufCRPCDataBuffer *read_from,
  * or -1 on a read error (consult errno).
  */
 /* TODO: zero-copy! */
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_data_buffer_read_in_fd
+** 功能描述: 从指定的文件描述符中尝试读取 8192 字节数数据并追加到指定的缓存空间中
+** 输	 入: write_to - 指定的缓存空间数据结构指针
+**		   : fd - 指定的文件描述符
+** 输	 出: rv - 成功读取并追加的数据字节数
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 int
 protobuf_c_rpc_data_buffer_read_in_fd(ProtobufCRPCDataBuffer *write_to,
                       int        read_from)
@@ -696,6 +970,14 @@ protobuf_c_rpc_data_buffer_read_in_fd(ProtobufCRPCDataBuffer *write_to,
  * The buffer is guaranteed to not to be consuming any resources,
  * but it also is allowed to start using it again.
  */
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_data_buffer_reset
+** 功能描述: 释放指定缓存空间中所有的缓存数据块占用的内存资源并设置缓存空间数据结构到复位状态
+** 输	 入: to_destroy - 指定的缓存空间数据结构指针
+** 输	 出: 
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 void
 protobuf_c_rpc_data_buffer_reset(ProtobufCRPCDataBuffer *to_destroy)
 {
@@ -711,6 +993,14 @@ protobuf_c_rpc_data_buffer_reset(ProtobufCRPCDataBuffer *to_destroy)
   to_destroy->size = 0;
 }
 
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_data_buffer_clear
+** 功能描述: 释放指定缓存空间中所有的缓存数据块占用的内存资源
+** 输	 入: to_destroy - 指定的缓存空间数据结构指针
+** 输	 出: 
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 void
 protobuf_c_rpc_data_buffer_clear(ProtobufCRPCDataBuffer *to_destroy)
 {
@@ -733,6 +1023,16 @@ protobuf_c_rpc_data_buffer_clear(ProtobufCRPCDataBuffer *to_destroy)
  * returns: its index in the buffer, or -1 if the character
  * is not in the buffer.
  */
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_data_buffer_index_of
+** 功能描述: 从释放指定缓存空间中查找和指定字符匹配的第一个字符在缓存空间中的位置
+** 输	 入: buffer - 指定的缓存空间数据结构指针
+**         : char_to_find - 指定的匹配字符
+** 输	 出: int - 指定匹配字符在缓存空间中的位置
+**         : -1 - 查找失败
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 int
 protobuf_c_rpc_data_buffer_index_of(ProtobufCRPCDataBuffer *buffer,
                     char       char_to_find)
@@ -761,6 +1061,16 @@ protobuf_c_rpc_data_buffer_index_of(ProtobufCRPCDataBuffer *buffer,
  * returns: its index in the buffer, or -1 if the string
  * is not in the buffer.
  */
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_data_buffer_str_index_of
+** 功能描述: 从释放指定缓存空间中查找和指定字符串匹配的第一个字符串在缓存空间中的位置
+** 输	 入: buffer - 指定的缓存空间数据结构指针
+**         : str_to_find - 指定的匹配字符串
+** 输	 出: int - 指定匹配字符串在缓存空间中的位置
+**         : -1 - 查找失败
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 int 
 protobuf_c_rpc_data_buffer_str_index_of (ProtobufCRPCDataBuffer *buffer,
                          const char *str_to_find)
@@ -829,6 +1139,15 @@ bad_guess:
  * returns: the number of bytes transferred.
  */
 #if GSK_DEBUG_BUFFER_ALLOCATIONS
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_data_buffer_drain
+** 功能描述: 把指定的源缓存空间中所有数据复制到指定的目的缓存空间中并释放源缓存空间占用的内存资源
+** 输	 入: dst - 指定的目的缓存空间数据结构指针
+**         : src - 指定的源缓存空间数据结构指针
+** 输	 出: rv - 成功复制的数据字节数
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 size_t
 protobuf_c_rpc_data_buffer_drain (ProtobufCRPCDataBuffer *dst,
 		  ProtobufCRPCDataBuffer *src)
@@ -847,6 +1166,15 @@ protobuf_c_rpc_data_buffer_drain (ProtobufCRPCDataBuffer *dst,
   return rv;
 }
 #else	/* optimized */
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_data_buffer_drain
+** 功能描述: 把指定的源缓存空间中所有数据复制到指定的目的缓存空间中并释放源缓存空间占用的内存资源
+** 输	 入: dst - 指定的目的缓存空间数据结构指针
+**         : src - 指定的源缓存空间数据结构指针
+** 输	 出: rv - 成功复制的数据字节数
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 size_t
 protobuf_c_rpc_data_buffer_drain (ProtobufCRPCDataBuffer *dst,
 		  ProtobufCRPCDataBuffer *src)
@@ -890,6 +1218,16 @@ protobuf_c_rpc_data_buffer_drain (ProtobufCRPCDataBuffer *dst,
  * returns: the number of bytes transferred.
  */
 #if GSK_DEBUG_BUFFER_ALLOCATIONS
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_data_buffer_drain
+** 功能描述: 从指定的源缓存空间中复制自定字节数的数据到指定的目的缓存空间中并释放源缓存空间占用的内存资源
+** 输	 入: dst - 指定的目的缓存空间数据结构指针
+**         : src - 指定的源缓存空间数据结构指针
+**         : max_transfer - 想要复制的数据字节数
+** 输	 出: rv - 成功复制的数据字节数
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 size_t
 protobuf_c_rpc_data_buffer_transfer(ProtobufCRPCDataBuffer *dst,
 		    ProtobufCRPCDataBuffer *src,
@@ -921,6 +1259,16 @@ protobuf_c_rpc_data_buffer_transfer(ProtobufCRPCDataBuffer *dst,
   return rv;
 }
 #else	/* optimized */
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_data_buffer_drain
+** 功能描述: 从指定的源缓存空间中复制自定字节数的数据到指定的目的缓存空间中并释放源缓存空间占用的内存资源
+** 输	 入: dst - 指定的目的缓存空间数据结构指针
+**         : src - 指定的源缓存空间数据结构指针
+**         : max_transfer - 想要复制的数据字节数
+** 输	 出: rv - 成功复制的数据字节数
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 size_t
 protobuf_c_rpc_data_buffer_transfer(ProtobufCRPCDataBuffer *dst,
 		    ProtobufCRPCDataBuffer *src,
