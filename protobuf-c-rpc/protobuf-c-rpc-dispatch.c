@@ -68,6 +68,7 @@
 #define DEBUG_DISPATCH_INTERNALS  0
 #define DEBUG_DISPATCH            0
 
+/* 如果 HAVE_SMALL_FDS == 1 则表示当前模块的 FDMap 数据结构通过指针数组查找，否则用红黑树查找 */
 #ifndef HAVE_SMALL_FDS
 # define HAVE_SMALL_FDS           1
 #endif
@@ -92,8 +93,12 @@ struct _Callback
 typedef struct _FDMap FDMap;
 struct _FDMap
 {
+  /* 和当前 FDMap 对应的文件描述符，即对应的 Dispatch 实例的 FDNotify 数组索引值 */
   int notify_desired_index;     /* -1 if not an known fd */
+  
+  /* 和当前 FDMap 对应的 Dispatch 实例的 FDNotifyChange 数组索引值 */
   int change_index;             /* -1 if no prior change */
+  
   int closed_since_notify_started;
 };
 
@@ -113,23 +118,38 @@ typedef struct _RealDispatch RealDispatch;
 struct _RealDispatch
 {
   ProtobufCRPCDispatch base;
+
+  /* 回调函数指针数组，一共 notifies_desired_alloced 个，系统会为每个 notifies_desired 分配一个回调函数 */
   Callback *callbacks;          /* parallels notifies_desired */
+
+  /* 表示在创建 Dispatch 实例时，需要为 base.notifies_desired 分配的成员空间个数 */
   size_t notifies_desired_alloced;
+
+  /* 表示在创建 Dispatch 实例时，需要为 base.changes 分配的成员空间个数 */
   size_t changes_alloced;
+  
 #if HAVE_SMALL_FDS
-  FDMap *fd_map;                /* map indexed by fd */
+  FDMap *fd_map;                /* map indexed by fd, default value is 255 */
   size_t fd_map_size;           /* number of elements of fd_map */
 #else
   FDMapNode *fd_map_tree;       /* map indexed by fd */
 #endif
 
+  /* 表示当前 Dispatch 实例是否正在 dispatching 中，即是否在 protobuf_c_rpc_dispatch_dispatch 函数中运行 */
   protobuf_c_boolean is_dispatching;
 
   ProtobufCRPCDispatchTimer *timer_tree;
+
+  /* 指向当前 Dispatch 实例结构使用的内存分配器 */
   ProtobufCAllocator *allocator;
+
+  /* 通过单链表（timer->right）链接当前 Dispatch 需要回收的 Timer 实例 */
   ProtobufCRPCDispatchTimer *recycled_timeouts;
 
+  /* 指向当前 Dispatch 实例包含的 idle functions */
   ProtobufCRPCDispatchIdle *first_idle, *last_idle;
+  
+  /* 指向当前 Dispatch 实例需要回收的 idle functions 链表 */
   ProtobufCRPCDispatchIdle *recycled_idles;
 };
 
@@ -198,10 +218,19 @@ struct _ProtobufCRPCDispatchIdle
   ProtobufCRPCDispatchIdle *, d->first_idle, d->last_idle, prev, next
 
 /* Create or destroy a Dispatch */
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_dispatch_new
+** 功能描述: 创建并初始化一个 Dispatch 实例结构
+** 输	 入: allocator - 内存分配器指针
+** 输	 出: &rv->base - 成功创建的 Dispatch 实例指针
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 ProtobufCRPCDispatch *protobuf_c_rpc_dispatch_new (ProtobufCAllocator *allocator)
 {
   RealDispatch *rv = ALLOC (sizeof (RealDispatch));
   struct timeval tv;
+  
   rv->base.n_changes = 0;
   rv->notifies_desired_alloced = 8;
   rv->base.notifies_desired = ALLOC (sizeof (ProtobufC_RPC_FDNotify) * rv->notifies_desired_alloced);
@@ -235,6 +264,15 @@ ProtobufCRPCDispatch *protobuf_c_rpc_dispatch_new (ProtobufCAllocator *allocator
 }
 
 #if !HAVE_SMALL_FDS
+/*********************************************************************************************************
+** 函数名称: free_fd_tree_recursive
+** 功能描述: 递归遍历指定的 fd_tree 并释放树上每个节点占用的内存资源
+** 输	 入: allocator - 内存分配器指针
+**         : node - 指定的 fd_tree 根节点指针
+** 输	 出: 
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 void free_fd_tree_recursive (ProtobufCAllocator *allocator,
                              FDMapNode          *node)
 {
@@ -248,6 +286,14 @@ void free_fd_tree_recursive (ProtobufCAllocator *allocator,
 #endif
 
 /* XXX: leaking timer_tree seemingly? */
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_dispatch_free
+** 功能描述: 释放指定 Dispatch 实例结构占用的内存资源
+** 输	 入: dispatch - 指定的 Dispatch 实例指针
+** 输	 出: 
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 void
 protobuf_c_rpc_dispatch_free(ProtobufCRPCDispatch *dispatch)
 {
@@ -277,6 +323,14 @@ protobuf_c_rpc_dispatch_free(ProtobufCRPCDispatch *dispatch)
   FREE (d);
 }
 
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_dispatch_peek_allocator
+** 功能描述: 获取指定 Dispatch 实例结构使用的内存分配器指针
+** 输	 入: dispatch - 指定的 Dispatch 实例指针
+** 输	 出: d->allocator - 获取到的内存分配器指针
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 ProtobufCAllocator *
 protobuf_c_rpc_dispatch_peek_allocator (ProtobufCRPCDispatch *dispatch)
 {
@@ -285,19 +339,37 @@ protobuf_c_rpc_dispatch_peek_allocator (ProtobufCRPCDispatch *dispatch)
 }
 
 /* --- allocator --- */
-
+/*********************************************************************************************************
+** 函数名称: system_alloc
+** 功能描述: 当前模块使用的内存分配函数
+** 输	 入: allocator_data - 
+**         : size - 需要分配的内存字节数
+** 输	 出: void * - 成功分配的内存块指针
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static void *
 system_alloc(void *allocator_data, size_t size)
 {
    return malloc(size);
 }
 
+/*********************************************************************************************************
+** 函数名称: system_alloc
+** 功能描述: 当前模块使用的内存释放函数
+** 输	 入: allocator_data - 
+**         : data - 需要释放的内存块指针
+** 输	 出: 
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static void
 system_free(void *allocator_data, void *data)
 {
    free(data);
 }
 
+/* 定义并初始化当前模块使用的内存分配器实例结构 */
 static ProtobufCAllocator protobuf_c_rpc__allocator = {
    .alloc = &system_alloc,
    .free = &system_free,
@@ -305,8 +377,17 @@ static ProtobufCAllocator protobuf_c_rpc__allocator = {
 };
 
 /* TODO: perhaps thread-private dispatches make more sense? */
+/* 指向当前模块默认使用的默认 Dispatch 实例结构 */
 static ProtobufCRPCDispatch *def = NULL;
 
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_dispatch_default
+** 功能描述: 获取当前模块默认使用的 Dispatch 实例结构指针
+** 输	 入: 
+** 输	 出: def - 当前模块默认 Dispatch 实例结构指针
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 ProtobufCRPCDispatch  *protobuf_c_rpc_dispatch_default (void)
 {
   if (def == NULL)
@@ -315,6 +396,15 @@ ProtobufCRPCDispatch  *protobuf_c_rpc_dispatch_default (void)
 }
 
 #if HAVE_SMALL_FDS
+/*********************************************************************************************************
+** 函数名称: enlarge_fd_map
+** 功能描述: 扩大指定的 Dispatch 实例的 fd_map 数组长度到可以容纳指定的文件描述符
+** 输	 入: d - 指定的 Dispatch 实例指针
+**         : fd - 指定的文件描述符
+** 输	 出: 
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static void
 enlarge_fd_map (RealDispatch *d,
                 unsigned      fd)
@@ -334,6 +424,15 @@ enlarge_fd_map (RealDispatch *d,
   d->fd_map_size = new_size;
 }
 
+/*********************************************************************************************************
+** 函数名称: ensure_fd_map_big_enough
+** 功能描述: 扩大指定的 Dispatch 实例的 fd_map 数组长度到可以容纳指定的文件描述符
+** 输	 入: d - 指定的 Dispatch 实例指针
+**         : fd - 指定的文件描述符
+** 输	 出: 
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static inline void
 ensure_fd_map_big_enough (RealDispatch *d,
                           unsigned      fd)
@@ -343,6 +442,15 @@ ensure_fd_map_big_enough (RealDispatch *d,
 }
 #endif
 
+/*********************************************************************************************************
+** 函数名称: allocate_notifies_desired_index
+** 功能描述: 获取指定的 Dispatch 实例中的 FDNotify 数组中空闲单元索引值
+** 注     释: 如果指定的 Dispatch 实例的 FDNotify 数组已经用尽，则会对其扩容然后再返回
+** 输	 入: d - 指定的 Dispatch 实例指针
+** 输	 出: 
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static unsigned
 allocate_notifies_desired_index (RealDispatch *d)
 {
@@ -366,6 +474,16 @@ allocate_notifies_desired_index (RealDispatch *d)
 #endif
   return rv;
 }
+
+/*********************************************************************************************************
+** 函数名称: allocate_change_index
+** 功能描述: 获取指定的 Dispatch 实例中的 FDNotifyChange 数组中空闲单元索引值
+** 注     释: 如果指定的 Dispatch 实例的 FDNotifyChange 数组已经用尽，则会对其扩容然后再返回
+** 输	 入: d - 指定的 Dispatch 实例指针
+** 输	 出: 
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static unsigned
 allocate_change_index (RealDispatch *d)
 {
@@ -383,6 +501,16 @@ allocate_change_index (RealDispatch *d)
   return rv;
 }
 
+/*********************************************************************************************************
+** 函数名称: get_fd_map
+** 功能描述: 获取指定的 Dispatch 实例的 FDMap 数组中和指定文件描述符对应的 FDMap 结构指针
+** 输	 入: d - 指定的 Dispatch 实例指针
+**         : fd - 指定的文件描述符
+** 输	 出: FDMap * - 成功获取的 FDMap 结构指针
+**         : NULL - 没找到匹配的 FDMap 结构
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static inline FDMap *
 get_fd_map (RealDispatch *d, ProtobufC_RPC_FD fd)
 {
@@ -397,6 +525,19 @@ get_fd_map (RealDispatch *d, ProtobufC_RPC_FD fd)
   return node ? &node->map : NULL;
 #endif
 }
+
+/*********************************************************************************************************
+** 函数名称: force_fd_map
+** 功能描述: 获取指定的 Dispatch 实例的 FDMap 数组中和指定文件描述符对应的 FDMap 结构指针
+** 注     释: 如果指定的文件描述符在指定的 Dispatch 实例中没有对应的 FDMap 结构，则对其进行扩容并返回
+**         : 指定文件描述符对应的 FDMap 结构指针
+** 输	 入: d - 指定的 Dispatch 实例指针
+**         : fd - 指定的文件描述符
+** 输	 出: FDMap * - 成功获取的 FDMap 结构指针
+**         : NULL - 没找到匹配的 FDMap 结构
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static inline FDMap *
 force_fd_map (RealDispatch *d, ProtobufC_RPC_FD fd)
 {
@@ -422,6 +563,15 @@ force_fd_map (RealDispatch *d, ProtobufC_RPC_FD fd)
 #endif
 }
 
+/*********************************************************************************************************
+** 函数名称: deallocate_change_index
+** 功能描述: 从指定的 Dispatch 实例的 FDNotifyChange 数组中移除指定的 FDMap 成员
+** 输	 入: d - 指定的 Dispatch 实例指针
+**         : fm - 指定的 FDMap 成员指针
+** 输	 出: 
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static void
 deallocate_change_index (RealDispatch *d,
                          FDMap        *fm)
@@ -441,6 +591,16 @@ deallocate_change_index (RealDispatch *d,
   d->base.n_changes--;
 }
 
+/*********************************************************************************************************
+** 函数名称: deallocate_notify_desired_index
+** 功能描述: 从指定的 Dispatch 实例的 FDNotify 数组中移除和指定 FDMap 对应的 FDNotify
+** 输	 入: d - 指定的 Dispatch 实例指针
+**         : fd - 未使用
+**         : fm - 指定的 FDMap 成员指针
+** 输	 出: 
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static void
 deallocate_notify_desired_index (RealDispatch *d,
                                  ProtobufC_RPC_FD  fd,
@@ -467,6 +627,20 @@ deallocate_notify_desired_index (RealDispatch *d,
 }
 
 /* Registering file-descriptors to watch. */
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_dispatch_watch_fd
+** 功能描述: 为指定的 Dispatch 实例注册一个指定参数集的 FDNotify 成员，如果指定得文件描述符之前已经
+**         : 注册过 FDNotify 则把之前注册的 FDNotify 放到与其对应的 FDNotifyChange 数组中
+** 注     释: 当系统接收到和指定文件描述符匹配事件的 FDNotify 时就会调用与其对应的回调函数
+** 输	 入: dispatch - 指定的 Dispatch 实例指针
+**         : fd - 指定的文件描述符
+**         : events - 指定的事件
+**         : callback - 指定的回调函数指针
+**         : callback_data - 指定的回调函数参数数据指针
+** 输	 出: 
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 void
 protobuf_c_rpc_dispatch_watch_fd (ProtobufCRPCDispatch *dispatch,
                               ProtobufC_RPC_FD        fd,
@@ -489,28 +663,39 @@ protobuf_c_rpc_dispatch_watch_fd (ProtobufCRPCDispatch *dispatch,
     assert (events == 0);
   else
     assert (events != 0);
+
+  /* 获取指定的 Dispatch 实例的 FDMap 数组中和指定文件描述符对应的 FDMap 结构指针 */
   fm = force_fd_map (d, f);
 
   /* XXX: should we set fm->map.closed_since_notify_started=0 ??? */
-
+  /* fm->notify_desired_index == -1 表示指定文件描述符对应的 FDMap 没有关联 FDNotify 成员 */
   if (fm->notify_desired_index == -1)
     {
-      if (callback != NULL)
-        nd_ind = fm->notify_desired_index = allocate_notifies_desired_index (d);
+      if (callback != NULL) 
+	  	{
+	  	  /* 获取指定的 Dispatch 实例中的 FDNotify 数组中空闲单元索引值 */
+          nd_ind = fm->notify_desired_index = allocate_notifies_desired_index (d);
+      	}
       old_events = 0;
     }
   else
     {
       old_events = dispatch->notifies_desired[fm->notify_desired_index].events;
       if (callback == NULL)
-        deallocate_notify_desired_index (d, fd, fm);
+      	{
+      	  /* 从指定的 Dispatch 实例的 FDNotify 数组中移除和指定 FDMap 对应的 FDNotify */
+          deallocate_notify_desired_index (d, fd, fm);
+      	}
       else
         nd_ind = fm->notify_desired_index;
     }
+  
   if (callback == NULL)
     {
+	  /* fm->change_index == -1 表示指定文件描述符对应的 FDMap 没有关联 FDNotifyChange 成员 */
       if (fm->change_index == -1)
         {
+          /* 获取指定的 Dispatch 实例中的 FDNotifyChange 数组中空闲单元索引值 */
           change_ind = fm->change_index = allocate_change_index (d);
           dispatch->changes[change_ind].old_events = old_events;
         }
@@ -520,9 +705,13 @@ protobuf_c_rpc_dispatch_watch_fd (ProtobufCRPCDispatch *dispatch,
       d->base.changes[change_ind].events = 0;
       return;
     }
+  
   assert (callback != NULL && events != 0);
+  
+  /* fm->change_index == -1 表示指定文件描述符对应的 FDMap 没有关联 FDNotifyChange 成员 */
   if (fm->change_index == -1)
     {
+	  /* 获取指定的 Dispatch 实例中的 FDNotifyChange 数组中空闲单元索引值 */
       change_ind = fm->change_index = allocate_change_index (d);
       dispatch->changes[change_ind].old_events = old_events;
     }
@@ -537,6 +726,16 @@ protobuf_c_rpc_dispatch_watch_fd (ProtobufCRPCDispatch *dispatch,
   d->callbacks[nd_ind].data = callback_data;
 }
 
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_dispatch_fd_closed
+** 功能描述: 从指定的 Dispatch 实例中释放和指定描述符对应的 FDNotify 和 FDNotifyChange 成员并关闭指定
+**         : 文件描述符代表的文件
+** 输	 入: dispatch - 指定的 Dispatch 实例指针
+**         : fd - 指定的文件描述符
+** 输	 出: 
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 void
 protobuf_c_rpc_dispatch_close_fd (ProtobufCRPCDispatch *dispatch,
                               ProtobufC_RPC_FD        fd)
@@ -545,6 +744,15 @@ protobuf_c_rpc_dispatch_close_fd (ProtobufCRPCDispatch *dispatch,
   close (fd);
 }
 
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_dispatch_fd_closed
+** 功能描述: 从指定的 Dispatch 实例中释放和指定描述符对应的 FDNotify 和 FDNotifyChange 成员
+** 输	 入: dispatch - 指定的 Dispatch 实例指针
+**         : fd - 指定的文件描述符
+** 输	 出: 
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 void
 protobuf_c_rpc_dispatch_fd_closed(ProtobufCRPCDispatch *dispatch,
                               ProtobufC_RPC_FD        fd)
@@ -562,6 +770,14 @@ protobuf_c_rpc_dispatch_fd_closed(ProtobufCRPCDispatch *dispatch,
     deallocate_notify_desired_index (d, fd, fm);
 }
 
+/*********************************************************************************************************
+** 函数名称: free_timer
+** 功能描述: 释放指定的 Dispatch Timer 实例
+** 输	 入: timer - 指定的 Dispatch Timer 实例指针
+** 输	 出: 
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static void
 free_timer (ProtobufCRPCDispatchTimer *timer)
 {
@@ -570,6 +786,22 @@ free_timer (ProtobufCRPCDispatchTimer *timer)
   d->recycled_timeouts = timer;
 }
 
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_dispatch_dispatch
+** 功能描述: 根据指定的  Dispatch 实例和 FDNotify 数组数据执行分发操作，具体如下：
+**         : 1. 遍历指定的 FDNotify 数组中每一个成员并在指定的 Dispatch 实例中查找和其匹配的 FDNotify
+**         :    并调用和匹配的 FDNotify 对应的回调函数
+**         : 2. 清除当前 Dispatch 实例的 FDNotifyChange 数组的所有成员
+**         : 3. 运行当前 Dispatch 实例中包含的每一个 idle functions 并回收
+**         : 4. 遍历当前 Dispatch 实例中包含的每一个超时定时器实例结构并判断是否超时，如果超时则调用
+**         :    超时定时器对应的超时处理函数并移除这个超时定时器
+** 输	 入: dispatch - 指定的 Dispatch 实例指针
+**         : n_notifies - 指定的 FDNotify 数组长度
+**         : notifies - 指定的 FDNotify 数组指针
+** 输	 出: 
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 void
 protobuf_c_rpc_dispatch_dispatch (ProtobufCRPCDispatch *dispatch,
                               size_t              n_notifies,
@@ -590,13 +822,20 @@ protobuf_c_rpc_dispatch_dispatch (ProtobufCRPCDispatch *dispatch,
   dispatch->last_dispatch_secs = tv.tv_sec;
   dispatch->last_dispatch_usecs = tv.tv_usec;
 
+  /* 记录指定的 FDNotify 数组中最大的文件描述符的值 */
   fd_max = 0;
   for (i = 0; i < n_notifies; i++)
     if (fd_max < (unsigned) notifies[i].fd)
       fd_max = notifies[i].fd;
+
+  /* 扩大指定的 Dispatch 实例的 fd_map 数组长度到可以容纳指定的文件描述符 */
   ensure_fd_map_big_enough (d, fd_max);
+	
   for (i = 0; i < n_notifies; i++)
     d->fd_map[notifies[i].fd].closed_since_notify_started = 0;
+
+  /* 遍历指定的 FDNotify 数组中每一个成员并在指定的 Dispatch 实例中查找和其匹配的 FDNotify
+     并调用和匹配的 FDNotify 对应的回调函数 */
   for (i = 0; i < n_notifies; i++)
     {
       unsigned fd = notifies[i].fd;
@@ -611,11 +850,13 @@ protobuf_c_rpc_dispatch_dispatch (ProtobufCRPCDispatch *dispatch,
     }
 
   /* clear changes */
+  /* 清除当前 Dispatch 实例的 FDNotifyChange 数组的所有成员 */
   for (i = 0; i < dispatch->n_changes; i++)
     d->fd_map[dispatch->changes[i].fd].change_index = -1;
   dispatch->n_changes = 0;
 
   /* handle idle functions */
+  /* 运行当前 Dispatch 实例中包含的每一个 idle functions 并回收 */
   while (d->first_idle != NULL)
     {
       ProtobufCRPCDispatchIdle *idle = d->first_idle;
@@ -632,6 +873,8 @@ protobuf_c_rpc_dispatch_dispatch (ProtobufCRPCDispatch *dispatch,
   dispatch->has_idle = 0;
 
   /* handle timers */
+  /* 遍历当前 Dispatch 实例中包含的每一个超时定时器实例结构并判断是否超时
+     如果超时则调用超时定时器对应的超时处理函数并移除这个超时定时器 */
   while (d->timer_tree != NULL)
     {
       ProtobufCRPCDispatchTimer *min_timer;
@@ -658,6 +901,7 @@ protobuf_c_rpc_dispatch_dispatch (ProtobufCRPCDispatch *dispatch,
           break;
         }
     }
+  
   if (d->timer_tree == NULL)
     d->base.has_timeout = 0;
 
@@ -665,6 +909,14 @@ protobuf_c_rpc_dispatch_dispatch (ProtobufCRPCDispatch *dispatch,
   d->is_dispatching = 0;
 }
 
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_dispatch_clear_changes
+** 功能描述: 清除指定的 Dispatch 实例的 FDNotifyChange 数组中的所有成员
+** 输	 入: dispatch - 指定的 Dispatch 实例指针
+** 输	 出: 
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 void
 protobuf_c_rpc_dispatch_clear_changes (ProtobufCRPCDispatch *dispatch)
 {
@@ -679,6 +931,14 @@ protobuf_c_rpc_dispatch_clear_changes (ProtobufCRPCDispatch *dispatch)
   dispatch->n_changes = 0;
 }
 
+/*********************************************************************************************************
+** 函数名称: events_to_pollfd_events
+** 功能描述: 根据指定的 RPC 事件标志计算与其对应的 poll 事件标志
+** 输	 入: ev - 指定的 RPC 事件标志
+** 输	 出: unsigned - poll 事件标志
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static inline unsigned
 events_to_pollfd_events (unsigned ev)
 {
@@ -686,6 +946,15 @@ events_to_pollfd_events (unsigned ev)
        |  ((ev & PROTOBUF_C_RPC_EVENT_WRITABLE) ? POLLOUT : 0)
        ;
 }
+
+/*********************************************************************************************************
+** 函数名称: events_to_pollfd_events
+** 功能描述: 根据指定的 poll 事件标志计算与其对应的 RPC 事件标志
+** 输	 入: ev - 指定的 poll 事件标志
+** 输	 出: unsigned - RPC 事件标志
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static inline unsigned
 pollfd_events_to_events (unsigned ev)
 {
@@ -694,6 +963,16 @@ pollfd_events_to_events (unsigned ev)
        ;
 }
 
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_dispatch_run
+** 功能描述: 通过 poll 函数对指定的 Dispatch 实例的所有 FDNotify 文件描述符进行事件监测，如果发现了和
+**         : FDNotify 数组成员匹配的事件发生则调用相应的回调处理函数
+** 注     释: 处理调用匹配的回调处理函数之外还会处理指定 Dispatch 实例的 idle functions 和超时定时器
+** 输	 入: dispatch - 指定的 Dispatch 实例指针
+** 输	 出: 
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 void
 protobuf_c_rpc_dispatch_run (ProtobufCRPCDispatch *dispatch)
 {
@@ -705,10 +984,13 @@ protobuf_c_rpc_dispatch_run (ProtobufCRPCDispatch *dispatch)
   unsigned i;
   int timeout;
   ProtobufC_RPC_FDNotify *events;
+  
   if (dispatch->n_notifies_desired < 128)
     fds = alloca (sizeof (struct pollfd) * dispatch->n_notifies_desired);
   else
     to_free = fds = ALLOC (sizeof (struct pollfd) * dispatch->n_notifies_desired);
+
+  /* 遍历当前指定的 Dispatch 实例的所有 FDNotify 数组成员并根据每一个成员信息设置 poll 检测事件数据结构 */
   for (i = 0; i < dispatch->n_notifies_desired; i++)
     {
       fds[i].fd = dispatch->notifies_desired[i].fd;
@@ -717,6 +999,7 @@ protobuf_c_rpc_dispatch_run (ProtobufCRPCDispatch *dispatch)
     }
 
   /* compute timeout */
+  /* 根据当前指定的 Dispatch 实例的 idle functions 和超时定时器状态设置 poll 超时时间 */
   if (dispatch->has_idle)
     timeout = 0;
   else if (!dispatch->has_timeout)
@@ -725,6 +1008,7 @@ protobuf_c_rpc_dispatch_run (ProtobufCRPCDispatch *dispatch)
     {
       struct timeval tv;
       gettimeofday (&tv, NULL);
+	  
       if (dispatch->timeout_secs < (unsigned long) tv.tv_sec
        || (dispatch->timeout_secs == (unsigned long) tv.tv_sec
         && dispatch->timeout_usecs <= (unsigned) tv.tv_usec))
@@ -747,6 +1031,7 @@ protobuf_c_rpc_dispatch_run (ProtobufCRPCDispatch *dispatch)
         }
     }
 
+  /* 开始监测指定的文件描述符 */
   if (poll (fds, dispatch->n_notifies_desired, timeout) < 0)
     {
       if (errno == EINTR)
@@ -756,14 +1041,19 @@ protobuf_c_rpc_dispatch_run (ProtobufCRPCDispatch *dispatch)
       fprintf (stderr, "error polling: %s\n", strerror (errno));
       return;
     }
+
+  /* 遍历 poll 函数监测的文件描述符数组，统计产生事件的文件描述符个数 */
   n_events = 0;
   for (i = 0; i < dispatch->n_notifies_desired; i++)
     if (fds[i].revents)
       n_events++;
+	
   if (n_events < 128)
     events = alloca (sizeof (ProtobufC_RPC_FDNotify) * n_events);
   else
     to_free2 = events = ALLOC (sizeof (ProtobufC_RPC_FDNotify) * n_events);
+
+  /* 根据 poll 函数的监测结果创建 FDNotify 数组数据结构 */
   n_events = 0;
   for (i = 0; i < dispatch->n_notifies_desired; i++)
     if (fds[i].revents)
@@ -776,13 +1066,28 @@ protobuf_c_rpc_dispatch_run (ProtobufCRPCDispatch *dispatch)
         if (events[n_events].events != 0)
           n_events++;
       }
+
+  /* 根据指定的 Dispatch 实例和 FDNotify 数组数据执行分发操作 */
   protobuf_c_rpc_dispatch_dispatch (dispatch, n_events, events);
+	
   if (to_free)
     FREE (to_free);
   if (to_free2)
     FREE (to_free2);
 }
 
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_dispatch_add_timer
+** 功能描述: 向指定的 Dispatch 实例中添加一个指定参数的超时定时器实例
+** 输	 入: dispatch - 指定的 Dispatch 实例指针
+**         : timeout_secs - 指定的超时时间的秒部分数值
+**         : timeout_usecs - 指定的超时时间的微秒部分数值
+**         : func - 指定的超时处理函数指针
+**         : func_data - 指定的超时处理函数数据
+** 输	 出: rv - 新添加的超时定时器实例指针
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 ProtobufCRPCDispatchTimer *
 protobuf_c_rpc_dispatch_add_timer(ProtobufCRPCDispatch *dispatch,
                               unsigned            timeout_secs,
@@ -795,6 +1100,8 @@ protobuf_c_rpc_dispatch_add_timer(ProtobufCRPCDispatch *dispatch,
   ProtobufCRPCDispatchTimer *at;
   ProtobufCRPCDispatchTimer *conflict;
   protobuf_c_rpc_assert (func != NULL);
+
+  /* 分配一个 Timer 实例空间 */
   if (d->recycled_timeouts != NULL)
     {
       rv = d->recycled_timeouts;
@@ -804,6 +1111,8 @@ protobuf_c_rpc_dispatch_add_timer(ProtobufCRPCDispatch *dispatch,
     {
       rv = d->allocator->alloc (d->allocator, sizeof (ProtobufCRPCDispatchTimer));
     }
+
+  /* 根据函数指定的参数初始化 Timer 实例并插入到超时函数红黑树上 */
   rv->timeout_secs = timeout_secs;
   rv->timeout_usecs = timeout_usecs;
   rv->func = func;
@@ -815,6 +1124,7 @@ protobuf_c_rpc_dispatch_add_timer(ProtobufCRPCDispatch *dispatch,
   for (at = rv; at != NULL; at = at->parent)
     if (at->parent && at->parent->right == at)
       break;
+	
   if (at == NULL)               /* yes, so set the public members */
     {
       dispatch->has_timeout = 1;
@@ -824,6 +1134,17 @@ protobuf_c_rpc_dispatch_add_timer(ProtobufCRPCDispatch *dispatch,
   return rv;
 }
 
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_dispatch_add_timer_millis
+** 功能描述: 向指定的 Dispatch 实例中添加一个指定的毫秒级的超时定时器实例
+** 输	 入: dispatch - 指定的 Dispatch 实例指针
+**         : millis - 指定的毫秒级超时时间
+**         : func - 指定的超时处理函数指针
+**         : func_data - 指定的超时处理函数数据
+** 输	 出: ProtobufCRPCDispatchTimer * - 新添加的超时定时器实例指针
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 ProtobufCRPCDispatchTimer *
 protobuf_c_rpc_dispatch_add_timer_millis
                              (ProtobufCRPCDispatch *dispatch,
@@ -843,6 +1164,14 @@ protobuf_c_rpc_dispatch_add_timer_millis
   return protobuf_c_rpc_dispatch_add_timer (dispatch, tsec, tusec, func, func_data);
 }
 
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_dispatch_remove_timer
+** 功能描述: 把指定的超时定时器实例从其所属的 Dispatch 实例中移除
+** 输	 入: timer - 指定的 Timer 实例指针
+** 输	 出: 
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 void  protobuf_c_rpc_dispatch_remove_timer (ProtobufCRPCDispatchTimer *timer)
 {
   protobuf_c_boolean may_be_first;
@@ -870,6 +1199,17 @@ void  protobuf_c_rpc_dispatch_remove_timer (ProtobufCRPCDispatchTimer *timer)
         }
     }
 }
+
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_dispatch_add_idle
+** 功能描述: 向指定的 Dispatch 实例中添加一个 idle functions
+** 输	 入: dispatch - 指定的 Dispatch 实例指针
+**         : func - 指定的 idle functions 指针
+**         : func_data - 指定的 idle functions 数据
+** 输	 出: rv - 新添加的 idle functions 实例指针
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 ProtobufCRPCDispatchIdle *
 protobuf_c_rpc_dispatch_add_idle (ProtobufCRPCDispatch *dispatch,
                               ProtobufCRPCDispatchIdleFunc func,
@@ -895,6 +1235,14 @@ protobuf_c_rpc_dispatch_add_idle (ProtobufCRPCDispatch *dispatch,
   return rv;
 }
 
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_dispatch_remove_idle
+** 功能描述: 把指定的 idle functions 实例从其所属的 Dispatch 实例中移除
+** 输	 入: idle - 指定的 idle functions 指针
+** 输	 出: 
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 void
 protobuf_c_rpc_dispatch_remove_idle (ProtobufCRPCDispatchIdle *idle)
 {
@@ -906,6 +1254,15 @@ protobuf_c_rpc_dispatch_remove_idle (ProtobufCRPCDispatchIdle *idle)
       d->recycled_idles = idle;
     }
 }
+
+/*********************************************************************************************************
+** 函数名称: protobuf_c_rpc_dispatch_destroy_default
+** 功能描述: 尝试释放前模块默认使用的 Dispatch 实例结构占用的内存资源
+** 输	 入: 
+** 输	 出: 
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 void protobuf_c_rpc_dispatch_destroy_default (void)
 {
   if (def)

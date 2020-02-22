@@ -109,13 +109,13 @@ void  protobuf_c_rpc_dispatch_run      (ProtobufCRPCDispatch *dispatch);
 /* --- API for those who want to embed a dispatch into their own main-loop --- */
 typedef struct {
   ProtobufC_RPC_FD fd;
-  ProtobufC_RPC_Events events;
+  ProtobufC_RPC_Events events;     /* 是一个位图结构 */
 } ProtobufC_RPC_FDNotify;
 
 typedef struct {
   ProtobufC_RPC_FD fd;
-  ProtobufC_RPC_Events old_events;
-  ProtobufC_RPC_Events events;
+  ProtobufC_RPC_Events old_events; /* 是一个位图结构 */
+  ProtobufC_RPC_Events events;     /* 是一个位图结构 */
 } ProtobufC_RPC_FDNotifyChange;
 
 void  protobuf_c_rpc_dispatch_dispatch (ProtobufCRPCDispatch *dispatch,
@@ -129,22 +129,31 @@ struct _ProtobufCRPCDispatch
   /* changes to the events you are interested in. */
   /* (this handles closed file-descriptors 
      in a manner agreeable to epoll(2) and kqueue(2)) */
+  /* 表示当前 Dispatch 实例已经注册的 FDNotifyChange 个数 */
   size_t n_changes;
+  
+  /* 用来存储当前 Dispatch 实例注册的 FDNotifyChange 信息，如果在为指定得文件描述符注册 FDNotify 
+     时发现之前已经注册过 FDNotify 则把之前注册的 FDNotify 放到与其对应的 FDNotifyChange 数组中 */
   ProtobufC_RPC_FDNotifyChange *changes;
 
   /* the complete set of events you are interested in. */
+  /* 表示当前 Dispatch 实例已经注册的 FDNotify 个数 */
   size_t n_notifies_desired;
+
+  /* 用来存储当前 Dispatch 实例注册的 FDNotify 信息 */
   ProtobufC_RPC_FDNotify *notifies_desired;
 
   /* number of milliseconds to wait if no events occur */
-  protobuf_c_boolean has_timeout;
-  unsigned long timeout_secs;
-  unsigned timeout_usecs;
+  protobuf_c_boolean has_timeout; /* 表示当前 Dispatch 实例是否包含待处理的超时定时器 */
+  unsigned long timeout_secs;     /* 表示当前 Dispatch 实例包含的超时的定时器中时间最早的定时器的秒部分时间 */
+  unsigned timeout_usecs;         /* 表示当前 Dispatch 实例包含的超时的定时器中时间最早的定时器的毫秒部分时间 */
 
   /* true if there is an idle function, in which case polling with
      timeout 0 is appropriate */
+  /* 表示当前 Dispatch 实例中是否包含待处理的 idle functions */
   protobuf_c_boolean has_idle;
 
+  /* 用来记录当前 Dispatch 实例上一次 dispatching（调用 protobuf_c_rpc_dispatch_dispatch 函数）的系统时间 */
   unsigned long last_dispatch_secs;
   unsigned last_dispatch_usecs;
 
