@@ -77,6 +77,8 @@ typedef struct
 {
    uint32_t method_index;
    uint32_t request_id;
+
+   /* 定义 ProtobufC 消息实例的数据结构，包含了一条 protobuf 消息的所有信息 */
    ProtobufCMessage *message;
 } ProtobufC_RPC_Payload;
 

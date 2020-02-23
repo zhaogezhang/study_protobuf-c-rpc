@@ -123,7 +123,7 @@ void  protobuf_c_rpc_dispatch_dispatch (ProtobufCRPCDispatch *dispatch,
                                     ProtobufC_RPC_FDNotify *notifies);
 void  protobuf_c_rpc_dispatch_clear_changes (ProtobufCRPCDispatch *);
 
-
+/* 定义了当前系统使用的 Dispatch 实例数据结构，主要用来处理事件监测及处理等操作 */
 struct _ProtobufCRPCDispatch
 {
   /* changes to the events you are interested in. */

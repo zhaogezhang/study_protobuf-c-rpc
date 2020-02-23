@@ -48,6 +48,15 @@ struct _Closure
   void *closure_data;
 };
 
+/*********************************************************************************************************
+** 函数名称: error_handler
+** 功能描述: 打印指定的错误消息
+** 输	 入: message - 需要打印的错误信息
+**         : error_func_data - 出错函数名
+** 输	 出: 
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static void
 error_handler (ProtobufC_RPC_Error_Code code,
                const char              *message,
@@ -57,6 +66,7 @@ error_handler (ProtobufC_RPC_Error_Code code,
            (char*) error_func_data, message);
 }
 
+/* 定义了当前系统 RPC 客户端实例数据结构 */
 struct _ProtobufC_RPC_Client
 {
   ProtobufCService base_service;
@@ -73,7 +83,11 @@ struct _ProtobufC_RPC_Client
   ProtobufC_RPC_Error_Func error_handler;
   void *error_handler_data;
   ProtobufC_RPC_Protocol rpc_protocol;
+
+  /* 记录了 RPC 客户端当前状态信息 */
   ProtobufC_RPC_ClientState state;
+
+  /* 定义了 RPC 客户端不同状态下使用的数据结构 */
   union {
     struct {
       ProtobufCRPCDispatchIdle *idle;
@@ -102,7 +116,14 @@ struct _ProtobufC_RPC_Client
 static void begin_name_lookup (ProtobufC_RPC_Client *client);
 static void destroy_client_rpc (ProtobufCService *service);
 
-
+/*********************************************************************************************************
+** 函数名称: set_fd_nonblocking
+** 功能描述: 设置指定的文件描述符为非阻塞模式
+** 输	 入: fd - 指定的文件描述符
+** 输	 出: 
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static void
 set_fd_nonblocking(int fd)
 {
@@ -111,6 +132,15 @@ set_fd_nonblocking(int fd)
   fcntl (fd, F_SETFL, flags | O_NONBLOCK);
 }
 
+/*********************************************************************************************************
+** 函数名称: handle_autoreconnect_timeout
+** 功能描述: 重新连接超时处理函数
+** 输	 入: dispatch - RPC Dispatch 实例指针
+**         : func_data - RPC 客户端实例指针
+** 输	 出: 
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static void
 handle_autoreconnect_timeout (ProtobufCRPCDispatch *dispatch,
                           void              *func_data)
@@ -122,6 +152,15 @@ handle_autoreconnect_timeout (ProtobufCRPCDispatch *dispatch,
   begin_name_lookup (client);
 }
 
+/*********************************************************************************************************
+** 函数名称: client_failed
+** 功能描述: 客户端执行失败处理函数
+** 输	 入: dispatch - RPC Dispatch 实例指针
+**         : func_data - RPC 客户端实例指针
+** 输	 出: 
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static void
 client_failed (ProtobufC_RPC_Client *client,
                const char           *format_str,
@@ -133,6 +172,7 @@ client_failed (ProtobufC_RPC_Client *client,
   char *msg;
   size_t n_closures = 0;
   Closure *closures = NULL;
+  
   switch (client->state)
     {
     case PROTOBUF_C_RPC_CLIENT_STATE_NAME_LOOKUP:
@@ -204,6 +244,15 @@ client_failed (ProtobufC_RPC_Client *client,
     }
 }
 
+/*********************************************************************************************************
+** 函数名称: errno_is_ignorable
+** 功能描述: 判断指定的错误码是否可以被忽略
+** 输	 入: e - 指定的错误码
+** 输	 出: 1 - 可以忽略
+**         : 0 - 不可以忽略
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static inline protobuf_c_boolean
 errno_is_ignorable (int e)
 {
