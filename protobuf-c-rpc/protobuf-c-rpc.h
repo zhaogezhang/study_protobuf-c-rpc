@@ -97,6 +97,8 @@ typedef enum
 typedef const ProtobufCMessageDescriptor* (*ProtobufC_RPC_Get_Descriptor)
                                           (const ProtobufC_RPC_Payload* payload,
                                            void *data);
+
+/* 定义了当前 RPC 模块使用的数据序列化和反序列化函数指针类型 */
 typedef struct
 {
 /* Serializes the payload into the provided append-only buffer */

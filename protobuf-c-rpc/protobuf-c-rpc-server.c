@@ -602,7 +602,7 @@ handle_server_connection_events (int fd,
   if ((events & PROTOBUF_C_RPC_EVENT_WRITABLE) != 0
     && conn->outgoing.size > 0)
     {
-      /* 从指定的缓存空间头部开始读取尽可能多的数据并通过 writev 写如到指定的文件中
+      /* 从指定的缓存空间头部开始读取尽可能多的数据并通过 writev 写入到指定的文件中
          然后“释放”掉被处理数据的缓存数据块占用的内存资源 */
       int write_rv = protobuf_c_rpc_data_buffer_writev (&conn->outgoing, fd);
       if (write_rv < 0)
@@ -707,8 +707,8 @@ handle_server_connection_events (int fd,
  */
 /*********************************************************************************************************
 ** 函数名称: server_serialize
-** 功能描述: 把指定的 RPC 负载数据追加到指定的发送缓存区中
-** 输	 入: descriptor - 
+** 功能描述: 把指定的 RPC 负载数据序列化并追加到指定的 ProtobufC 缓冲区的末尾位置
+** 输	 入: descriptor - 未使用
 **         : allocator - 指定的内存分配器指针
 **         : payload - 需要发送的 RPC 负载数据
 ** 输	 出: out_buffer - 指定的发送缓冲区
@@ -749,7 +749,7 @@ server_serialize (const ProtobufCServiceDescriptor *descriptor,
 
       out_buffer->append (out_buffer, sizeof (header), (uint8_t *)header);
 
-	  /* 把指定的消息数据序列化并存储到指定的 ProtobufC 缓冲区中 */
+	  /* 把指定的消息数据序列化并追加到指定的 ProtobufC 缓冲区末尾位置 */
       if (protobuf_c_message_pack_to_buffer (payload.message, out_buffer)
             != message_length)
          return PROTOBUF_C_RPC_PROTOCOL_STATUS_FAILED;
@@ -759,8 +759,8 @@ server_serialize (const ProtobufCServiceDescriptor *descriptor,
 
 /*********************************************************************************************************
 ** 函数名称: server_deserialize
-** 功能描述: 把指定的 RPC 负载数据追加到指定的发送缓存区中
-** 输	 入: descriptor - 
+** 功能描述: 解析指定的 ProtobufC 序列化数据并把解析结果存储到指定的 RPC 负载数据中 
+** 输	 入: descriptor - 未使用
 **         : allocator - 指定的内存分配器指针
 **         : in_buffer - 从客户端接收到的输入数据包指针
 **         : payload - 接收到的 RPC 负载数据

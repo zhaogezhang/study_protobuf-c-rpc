@@ -728,8 +728,8 @@ protobuf_c_rpc_dispatch_watch_fd (ProtobufCRPCDispatch *dispatch,
 
 /*********************************************************************************************************
 ** 函数名称: protobuf_c_rpc_dispatch_fd_closed
-** 功能描述: 从指定的 Dispatch 实例中释放和指定描述符对应的 FDNotify 和 FDNotifyChange 成员并关闭指定
-**         : 文件描述符代表的文件
+** 功能描述: 从指定的 Dispatch 实例中释放和指定的文件描述符对应的 FDNotify 和 FDNotifyChange 成员
+**         : 并关闭指定文件描述符代表的文件
 ** 输	 入: dispatch - 指定的 Dispatch 实例指针
 **         : fd - 指定的文件描述符
 ** 输	 出: 
